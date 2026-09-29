@@ -19,7 +19,8 @@ public struct KokoroAneSynthesizer {
         styleS: [Float],
         styleTimbre: [Float],
         speed: Float = KokoroAneConstants.defaultSpeed,
-        store: KokoroAneModelStore
+        store: KokoroAneModelStore,
+        edits: KokoroAneEdits? = nil
     ) async throws -> KokoroAneSynthesisResult {
         guard styleS.count == 128 else {
             throw KokoroAneError.invalidVoicePack("style_s must be length 128, got \(styleS.count)")
@@ -67,10 +68,10 @@ public struct KokoroAneSynthesizer {
             timing: &timings.postAlbert
         )
 
-        // duration → pred_dur (int32, rounded, clamped ≥ 1)
+        // duration → pred_dur (int32, rounded, clamped ≥ 1 — or the caller's `durations` edit)
         let duration = try outputArray(postOut, key: "duration", stage: .postAlbert)
         let durFloats = KokoroAneArrays.readFloats(duration)
-        let predDur = try predictedDurations(from: durFloats)
+        let predDur = try alignedDurations(from: durFloats, edits: edits)
         let tA = predDur.reduce(0) { $0 + Int($1) }
         if tA > KokoroAneConstants.maxAcousticFrames {
             throw KokoroAneError.acousticFramesExceedCap(
@@ -106,10 +107,15 @@ public struct KokoroAneSynthesizer {
         let f0Shape = f0Raw.shape.map(\.intValue)
         let nRaw = try outputArray(prosOut, key: "N", stage: .prosody)
         let nShape = nRaw.shape.map(\.intValue)
+        // The caller's `prosody` edit, when set, replaces both curves before either copy is made.
+        let edited = try edits?.prosody == nil ? nil : editedCurves(
+            f0: KokoroAneArrays.readFloats(f0Raw), n: KokoroAneArrays.readFloats(nRaw),
+            durations: predDur, edits: edits)
 
         // ── 5: Noise (fp32 boundary) ─────────────────────────────────
         try Task.checkCancellation()
-        let f0F32 = try KokoroAneArrays.float32Array(shape: f0Shape, from: f0Raw)
+        let f0F32 = try edited.map { try KokoroAneArrays.float32Array(shape: f0Shape, from: $0.f0) }
+            ?? KokoroAneArrays.float32Array(shape: f0Shape, from: f0Raw)
         let noiseModel = try await store.model(for: .noise)
         let noiseOut = try await predict(
             stage: .noise, model: noiseModel,
@@ -119,8 +125,10 @@ public struct KokoroAneSynthesizer {
 
         // ── 6: Vocoder (fp16 boundary) ───────────────────────────────
         try Task.checkCancellation()
-        let f0F16 = try KokoroAneArrays.float16Array(shape: f0Shape, from: f0Raw)
-        let nF16 = try KokoroAneArrays.float16Array(shape: nShape, from: nRaw)
+        let f0F16 = try edited.map { try KokoroAneArrays.float16Array(shape: f0Shape, from: $0.f0) }
+            ?? KokoroAneArrays.float16Array(shape: f0Shape, from: f0Raw)
+        let nF16 = try edited.map { try KokoroAneArrays.float16Array(shape: nShape, from: $0.n) }
+            ?? KokoroAneArrays.float16Array(shape: nShape, from: nRaw)
         let xs0F16 = try rebuild16(noiseOut, key: "x_source_0", stage: .noise)
         let xs1F16 = try rebuild16(noiseOut, key: "x_source_1", stage: .noise)
         let vocoderModel = try await store.model(for: .vocoder)

@@ -16,6 +16,8 @@ public enum KokoroAneError: Error, LocalizedError {
     case unexpectedOutputShape(stage: String, expected: String, got: String)
     case nonFiniteModelOutput(stage: String, output: String)
     case audioConversionFailed(String)
+    /// A `KokoroAneEdits` hook returned something the chain cannot use.
+    case invalidEdit(String)
 
     public var errorDescription: String? {
         switch self {
@@ -52,6 +54,8 @@ public enum KokoroAneError: Error, LocalizedError {
                 + "see FluidAudio issue #738)."
         case .audioConversionFailed(let detail):
             return "KokoroAne audio conversion failed: \(detail)"
+        case .invalidEdit(let detail):
+            return "KokoroAne edit hook returned an invalid result: \(detail)"
         }
     }
 }
